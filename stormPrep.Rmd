@@ -1,0 +1,411 @@
+---
+title: "Storm Casualities and Economic Damage by Event"
+author: "Erich Hines"
+date: "March 22, 2018"
+output: html_document
+---
+
+###Synopsis
+
+National weather service data has been gathered for the years 1950 to 2011. There are a total of 902,297 observations in the data set. To analyze the data I will do the following. Property and crop damage will be converted to a single variable from two seperate columns in the original data and a variable, 'economic damage' will describe the sum of all damage. Injuries and fatalities will similary be combined into a 'casualties' variable. Event types will be grouped it into one of 13 categories based on the type of storm or event being described. For example all snow, ice, and cold events will be grouped as 'winter events', all tornados, funnel clouds, water spouts, etc will be grouped as 'tornados'. Based on these 13 categories it will be determined which resulted in the largest overall amount of casualties and economic damage and which resulted in the largest amount of casualties and economic damage per event. 
+
+```{r, echo = TRUE, cache = TRUE}
+library(data.table)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(knitr)
+
+#Load in the National Weather Service dataset, then save it as an 
+#Rdata file for quicker loading
+
+download.file("https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2",
+destfile="storm.csv.bz2")
+
+
+storm <- read.csv("storm.csv.bz2")
+
+save(storm, file = "storm.RData")
+
+# load("storm.RData")    
+```
+
+### Data Processing
+
+The documentation states that property damage figures are in two seperate columns, one with a 3 digit number and a second indicating whehter it's millions (M), billions (B), etc. I will run unique on the column to see what else is out there
+
+```{r, echo = TRUE}
+unique(storm$PROPDMGEXP)
+```
+
+It appears that in some cases from reading the descriptions that case was not kept consistent so I will assume 'k' is the same as 'K' etc. I'm now going to start subsetting the data based on these assumptions and change this to a single figure. Doing this one at a time so I can see what's happening
+
+Note: I will first remove the observations where 'PROPDMG = 0'. I discovered later in this analysis that there are a large number of observations with damage reported as 0 that still include a category in the PROPDMGEXP column. I will demonstrate that with the below code. 
+
+```{r}
+summary(storm$PROPDMGEXP[storm$PROPDMG == 0])
+```
+Now creating a temp file with the zeroes removed
+```{r}
+stormZ <- subset(storm, !(PROPDMG == 0))
+```
+
+Returning to our code to create a single variable for property damage.
+
+```{r, echo = TRUE, cache = TRUE}
+thousands <- subset(stormZ, PROPDMGEXP == "K" | PROPDMGEXP == "k")
+thousands$PROPDMG <- thousands$PROPDMG * 1000
+thousands$PROPDMGEXP <- NULL
+
+millions <- subset(stormZ, PROPDMGEXP == "M" | PROPDMGEXP == "m" )
+millions$PROPDMG <- millions$PROPDMG * 1000000
+millions$PROPDMGEXP <- NULL
+
+billions <- subset(stormZ, PROPDMGEXP == "B" | PROPDMGEXP == "b" )
+billions$PROPDMG <- billions$PROPDMG * 1000000000
+billions$PROPDMGEXP <- NULL
+
+unknown <- subset(
+  stormZ, !(PROPDMGEXP == "K" | 
+           PROPDMGEXP == "k" | 
+           PROPDMGEXP == "M" | 
+           PROPDMGEXP == "m" | 
+           PROPDMGEXP == "B" |
+           PROPDMGEXP == "b" 
+))
+
+```
+
+Look at the first 20 rows of the unknown data frame to see what is left.
+
+```{r}
+unknown$PROPDMG[1:20]
+```
+
+Now, look at the remaining categories in PROPDMGEXP.
+
+```{r}
+summary(unknown$PROPDMGEXP)
+```
+
+'PROPDMG = 0' is the largest category, so I will take a quick look at the remarks section to see if I can learn anything about this category
+
+
+```{r, cache = TRUE}
+head(unknown$PROPDMG[unknown$PROPDMGEXP == 0])
+head(unknown$REMARKS[unknown$PROPDMGEXP == 0])
+```
+
+From this I can see that in one instance $1500 in damages was reported as 150, 0 whereas in another instance, quite extensive damage was reported as 0.5, 0. From looking through this it seems these categories cannot be deciphered. Since these and the rest of the categories in the unknown data frame make up a couple hundred observations out of a dataset with over 900,000 observations, I will insert NA for these observations. Note that in cases where 'PROPDMG = 0' and has one of these unknown categories, it will still be included in the analysis data set as it is assumed that there was, in fact, 0 dollars worth of property damages in those instances.
+
+```{r}
+zeroes <- subset(storm, PROPDMG == 0)
+zeroes$PROPDMGEXP <- NULL
+
+unknown$PROPDMG    <- NA
+unknown$PROPDMGEXP <- NULL
+```
+
+I will now combine the zeroes, thousands, millions, and billions data frames to create the datset with the property dmg figures that will be carried into the analysis. 
+
+```{r, cache = TRUE}
+storm.analysis <- rbind(
+  unknown, zeroes, thousands, millions, billions
+)
+```
+
+And now I need to do the same thing for crop damage
+
+```{r, cache = TRUE}
+stormCrZ <- subset(storm.analysis, !(CROPDMG == 0))
+
+thousandsCr <- subset(stormCrZ, CROPDMGEXP == "K" | 
+                                CROPDMGEXP == "k")
+thousandsCr$CROPDMG <- thousandsCr$CROPDMG * 1000
+thousandsCr$CROPDMGEXP <- NULL
+
+millionsCr <- subset(stormCrZ, CROPDMGEXP == "M" | 
+                               CROPDMGEXP == "m" )
+millionsCr$CROPDMG <- millionsCr$CROPDMG * 1000000
+millionsCr$CROPDMGEXP <- NULL
+
+billionsCr <- subset(stormCrZ, CROPDMGEXP == "B" | 
+                               CROPDMGEXP == "b" )
+billionsCr$CROPDMG <- billionsCr$CROPDMG * 1000000000
+billionsCr$CROPDMGEXP <- NULL
+
+unknownCr <- subset(
+  stormCrZ, !(CROPDMGEXP == "K" | 
+              CROPDMGEXP == "k" | 
+              CROPDMGEXP == "M" | 
+              CROPDMGEXP == "m" | 
+              CROPDMGEXP == "B" |
+              CROPDMGEXP == "b" 
+))
+
+zeroesCr <- subset(storm.analysis, CROPDMG == 0)
+zeroesCr$CROPDMGEXP <- NULL
+
+unknownCr$CROPDMG    <- NA
+unknownCr$CROPDMGEXP <- NULL
+
+storm.analysis <- rbind(
+  unknownCr, zeroesCr, thousandsCr, millionsCr, billionsCr
+)
+
+storm.analysis <- arrange(storm.analysis, storm.analysis$REFNUM)
+
+```
+
+Now, a "CASUALTIES" and "ECONDMG" column will be created that sums the total of injuries and fatalities for each storm
+
+```{r, cache = TRUE}
+storm.analysis$CASUALTIES <- rowSums(
+    storm.analysis[,c("FATALITIES","INJURIES")], na.rm = TRUE
+)
+
+storm.analysis$ECONDMG <- rowSums(
+    storm.analysis[,c("PROPDMG","CROPDMG")], na.rm = TRUE
+)
+```
+
+
+I thought proceccesing wouldn't be too difficult, till I started doing the analysis and realzied what a mess EVTYPE is. I will now try to coerce that variable into something useable. First let's take a look at what we are dealing with.
+
+```{r}
+unique(storm.analysis$EVTYPE)[1:20]
+```
+
+As can be seen, many storms such as Thunderstorms and Hurricanes can be entered many, many different ways including abbreviations, misspellings, extra spacings, etc. Below I create a function to try and begin combining these categories. I will remove as I go along to prevent events appearing twice in the final analysis data frame.
+
+```{r, cache = TRUE}
+## OK, going to try and combine these event types, in order to not 
+## duplicate anyting I'm functionalizing and going to create a data 
+## frame that I will remove observations from as I go
+
+#set up so we can remove observations as we categorize
+storm.analysis.rmv <- storm.analysis
+
+filter.event <- function(db, strings){
+  filter(
+    db, grepl(
+      paste(strings, collapse = "|"), db$EVTYPE, 
+        ignore.case = TRUE)
+  )
+}
+
+Hurricanes         <- filter.event(storm.analysis, c("*CANE*","*TYPHOON*",
+                                                     "*FLOYD*"))
+storm.analysis.rmv <- anti_join(storm.analysis.rmv, Hurricanes, by = "EVTYPE")
+Hurricanes$EVTYPE  <- "Hurricane"
+
+Tornados           <- filter.event(storm.analysis.rmv, c("*TORN*","*CYCLONE*",
+                                     "*WALL*","*FUNNEL*","*WHIRLWIND*",
+                                     "*SPOUT*","*GUSTNADO*"))
+storm.analysis.rmv <- anti_join(storm.analysis.rmv, Tornados, by = "EVTYPE")
+Tornados$EVTYPE    <- "Tornados"
+
+Thunderstorms      <- filter.event(storm.analysis.rmv, c("*TSTM*","*THUNDER*",
+                                     "*LIGHTNING*","LIGHTING","LIGNTNING"))
+storm.analysis.rmv <- anti_join(storm.analysis.rmv, Thunderstorms, by = "EVTYPE")
+Thunderstorms$EVTYPE <- "Thunderstorms and Lightning"
+
+wintrystuff        <- c("*SNOW*","*ICE*","*WINTER*","*SLEET*","*BLIZZARD*",
+                        "*FREEZ*","*FROST*","*COLD*","*CHILL*",
+                        "*WINTRY*","*AVALA*","*COOL*","LOW","*HYPOTHERMIA*")
+Winterstorms       <- filter.event(storm.analysis.rmv, wintrystuff)
+storm.analysis.rmv <- anti_join(storm.analysis.rmv, Winterstorms, by = "EVTYPE")
+Winterstorms$EVTYPE <- "Winter and Cold Events"
+
+#will not include summaries in analysis
+Summaries          <- filter.event(storm.analysis.rmv, "*Summary*")
+storm.analysis.rmv <- anti_join(storm.analysis.rmv, Summaries, by = "EVTYPE")
+
+Hail               <- filter.event(storm.analysis.rmv, "*HAIL*")
+storm.analysis.rmv <- anti_join(storm.analysis.rmv, Hail, by = "EVTYPE")
+Hail$EVTYPE        <- "Hail"
+
+rainstuff          <- c("*RAIN*","*FLOOD*","*PRECIP*","*SLIDE*",
+                        "*STREAM*","*WET*","*BURST*","RAPIDLY RISING WATER",
+                        "HIGH WATER","*DAM*")
+Rainevents         <- filter.event(storm.analysis.rmv, rainstuff)
+storm.analysis.rmv <- anti_join(storm.analysis.rmv, Rainevents, by = "EVTYPE")
+Rainevents$EVTYPE  <- "Rain and Flooding Events"
+
+Heatevents         <- filter.event(storm.analysis.rmv, c("*HEAT*","*TEMP*",
+                            "*WARM*","*HOT*","RECORD HIGH","*HYPERTHERMIA*"))
+storm.analysis.rmv <- anti_join(storm.analysis.rmv, Heatevents, by = "EVTYPE")
+Heatevents$EVTYPE  <- "Heat Events"
+
+Windevents         <- filter.event(storm.analysis.rmv, c("*WIND*","*WND*","*BLOW*",
+                                  "*DEVIL*","*DUST*"))
+storm.analysis.rmv <- anti_join(storm.analysis.rmv, Windevents, by = "EVTYPE")
+Windevents$EVTYPE  <- "Wind Events"
+
+Oceanevents        <- filter.event(storm.analysis.rmv, c("*RIP*","*CURRENT*",
+                                   "*SEA*","*BEACH*", "*MARINE*","*SURF*",
+                                   "*COAST*", "*TIDE*","*WAVE*"))
+storm.analysis.rmv <- anti_join(storm.analysis.rmv, Oceanevents, by = "EVTYPE")
+Oceanevents$EVTYPE <- "Marine, Tide, and Coastal Events"
+
+Fire               <- filter.event(storm.analysis.rmv, c("*FIRE*","*SMOKE*"))
+storm.analysis.rmv <- anti_join(storm.analysis.rmv, Fire, by = "EVTYPE")
+Fire$EVTYPE        <- "Fires"
+
+Drought            <- filter.event(storm.analysis.rmv, c("*DRY*","*DROUGHT*"))
+storm.analysis.rmv <- anti_join(storm.analysis.rmv, Drought, by = "EVTYPE")
+Drought$EVTYPE     <- "Droughts"
+
+#Since a tsunami sounds pretty serious I'll put it in its own category
+Tsunami            <- filter.event(storm.analysis.rmv, "TSUNAMI")
+storm.analysis.rmv <- anti_join(storm.analysis.rmv, Tsunami, by = "EVTYPE")
+Tsunami$EVTYPE     <- "Tsunamis"
+
+#Run unique to see what's left
+unique(storm.analysis.rmv$EVTYPE)
+
+
+#all other events will be categorized as OTHER since
+# I don't know what many of them are
+storm.analysis.rmv$EVTYPE <- "Other"
+
+#Put everything back into our analysis data frame with the new event type name
+
+storm.analysis <- rbind(Hurricanes, Tornados, Thunderstorms, 
+                        Winterstorms, Hail, Rainevents, Heatevents, 
+                        Windevents, Oceanevents, Fire,
+                        Drought, Tsunami, storm.analysis.rmv)
+
+storm.analysis$EVTYPE <- factor(storm.analysis$EVTYPE)
+```
+
+
+###DATA ANALYSIS and RESULTS
+
+####Question #1: Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
+
+First we will create a table and a bar graph showing casualties, fatalities and injuries by event type. 
+
+```{r}
+casByEvent <- aggregate(
+  list(
+    Casualties = storm.analysis$CASUALTIES, 
+    Injuries = storm.analysis$INJURIES, 
+    Fatalities = storm.analysis$FATALITIES
+  ), 
+  by = list(Event = storm.analysis$EVTYPE), sum,
+  na.rm = TRUE, na.action = NULL
+)
+
+temp <- count(storm.analysis, EVTYPE)
+
+casByEvent <- merge(x = casByEvent, y = temp, by.x = "Event", by.y = "EVTYPE")
+
+casByEvent <- casByEvent[,c(1,5,2,3,4)]
+
+casByEvent <- arrange(casByEvent, desc(Casualties))
+
+kable(casByEvent, digits = 0, format.args = list(big.mark = ','))
+
+ggplot(casByEvent, aes(x = Event, y = Casualties)) + 
+  geom_bar(stat = "identity", fill = "steelblue") + 
+  coord_flip() + 
+  ggtitle("Total Casualties (Injuries and Fatalities) for each Event Type")
+```
+
+From this we can see that Tornados are far and away the event that is most injurios to human health. Looking further down the list we can see that while thunderstorms cause more casualites than heat events, heat events have a much higher fatalitiy rate and occur much less frequently.  
+To explore this further, let's look at casualties per event. 
+
+```{r}
+casByEvent <- aggregate(
+  list(
+    Casualties = storm.analysis$CASUALTIES, 
+    Injuries = storm.analysis$INJURIES, 
+    Fatalities = storm.analysis$FATALITIES
+  ), 
+  by = list(Event = storm.analysis$EVTYPE), mean,
+  na.rm = TRUE, na.action = NULL
+)
+
+temp <- count(storm.analysis, EVTYPE)
+
+casByEvent <- merge(x = casByEvent, y = temp, by.x = "Event", by.y = "EVTYPE")
+
+casByEvent <- casByEvent[,c(1,5,2,3,4)]
+
+casByEvent <- arrange(casByEvent, desc(Casualties))
+
+kable(casByEvent, digits = 0, format.args = list(big.mark = ','))
+
+ggplot(
+  casByEvent, aes(x = Event, y = Casualties)) + 
+  geom_bar(stat = "identity", fill = "steelblue") + 
+  ylab("Casualties per Event") + coord_flip() +
+  ggtitle("Casualties (Injuries and Fatalities) per Event")
+
+
+```
+
+From this we can see that tsunamis are the deadliest event per occurance followed by hurricanes and heat events. This suggest resources could be focused toward these areas since it also seems likely that these events will have advanced warning compared to tornados and thunderstorms. 
+
+####Question #2: Across the United States, which types of events have the greatest economic consequences?
+
+```{R}
+dmgByEvent <- aggregate(
+  list(
+    Economic.Damage = storm.analysis$ECONDMG, 
+    Property.Damage = storm.analysis$PROPDMG, 
+    Crop.Damage     = storm.analysis$CROPDMG
+  ), 
+  by = list(Event = storm.analysis$EVTYPE), sum,
+  na.rm = TRUE, na.action = NULL
+)
+
+temp <- count(storm.analysis, EVTYPE)
+
+dmgByEvent <- merge(x = dmgByEvent, y = temp, by.x = "Event", by.y = "EVTYPE")
+
+dmgByEvent <- dmgByEvent[,c(1,5,2,3,4)]
+
+dmgByEvent <- arrange(dmgByEvent, desc(Economic.Damage))
+
+kable(dmgByEvent, digits = 0, format.args = list(big.mark = ','))
+
+#Divide Economic damage by one million for the purpose of plotting
+
+div = 1000000
+
+ggplot(dmgByEvent, aes(x = Event, y = Economic.Damage/div)) + 
+  geom_bar(stat = "identity", fill = "steelblue") + 
+  scale_y_continuous(labels = dollar_format()) + coord_flip() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  ylab("Economic Damage (Millions of Dollars)") +
+  ggtitle("Total Economic Damage from each Event Type")
+```
+
+It seems that rain events cause the most economic damage, resulting in over 150 billion dollars in damages. We can also look at economic damage per event. Note that only a table will be displayed since the assignment only lets me make three plots.
+
+```{r}
+dmgByEvent <- aggregate(
+  list(
+    Economic.Damage = storm.analysis$ECONDMG, 
+    Property.Damage = storm.analysis$PROPDMG, 
+    Crop.Damage     = storm.analysis$CROPDMG
+  ), 
+  by = list(Event = storm.analysis$EVTYPE), mean,
+  na.rm = TRUE, na.action = NULL
+)
+
+temp <- count(storm.analysis, EVTYPE)
+
+dmgByEvent <- merge(x = dmgByEvent, y = temp, by.x = "Event", by.y = "EVTYPE")
+
+dmgByEvent <- dmgByEvent[,c(1,5,2,3,4)]
+
+dmgByEvent <- arrange(dmgByEvent, desc(Economic.Damage))
+
+kable(dmgByEvent, digits = 0, format.args = list(big.mark = ','))
+```
+
+From this we can see that hurricanes cause the most economic damage per event by a very wide margin. It can also be seen which events are more likely to affect property or crops. Droughts, for instance are third highest economic damage per event but most of that is due to crop failures. 
